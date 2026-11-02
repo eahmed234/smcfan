@@ -1,0 +1,17 @@
+[Unit]
+Description=Fan control daemon for Intel Macs (mbpfan)
+Documentation=https://github.com/eahmed234/smcfan
+After=sysinit.target systemd-modules-load.service
+
+[Service]
+Type=simple
+# Harmless when the smcfan shim is not installed or not needed (applesmc).
+ExecStartPre=-/usr/bin/modprobe smcfan
+ExecStart=/usr/bin/mbpfan -f
+ExecReload=/usr/bin/kill -HUP $MAINPID
+PIDFile=/run/mbpfan.pid
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=sysinit.target

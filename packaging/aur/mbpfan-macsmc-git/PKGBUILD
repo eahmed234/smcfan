@@ -1,0 +1,66 @@
+# Maintainer: Eisa Ahmed <eahmed234@gmail.com>
+#
+# Fork of mbpfan that can drive the fans through the macsmc driver stack of
+# Linux 7.3+ (via macsmc-hwmon, /dev/smc, or /dev/smcfan from smcfan-dkms-git)
+# instead of relying on the removed applesmc driver. The applesmc code path is
+# unchanged, so this package also works on kernels older than 7.3.
+
+pkgname=mbpfan-macsmc-git
+pkgver=0
+pkgrel=1
+pkgdesc="Fan speed daemon for Intel Macs, forked to support the macsmc driver (/dev/smc, /dev/smcfan)"
+arch=('x86_64')
+url="https://github.com/eahmed234/smcfan"
+license=('GPL-3.0-or-later')
+depends=('glibc')
+makedepends=('git')
+optdepends=(
+  'smcfan-dkms-git: write fan keys on kernels that only have macsmc (Linux 7.3+)'
+)
+provides=('mbpfan')
+conflicts=('mbpfan')
+backup=('etc/mbpfan.conf')
+install="$pkgname.install"
+
+_srcname=smcfan
+source=("$_srcname::git+$url.git#branch=main"
+        'mbpfan.service')
+sha256sums=('SKIP'
+            '357358e18cc509283c230b73fe3d58ceaa688965bea09c437d080b286b15153f')
+
+pkgver() {
+  cd "$_srcname"
+  # The repository is not tagged; distance from the root commit plus a hash is
+  # enough for a -git package and always increases.
+  printf 'r%s.%s' \
+    "$(git rev-list --count HEAD)" \
+    "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+  cd "$_srcname"
+  if [ ! -d mbpfan ]; then
+    printf '\nmbpfan/ is missing from the fetched source tree.\n' >&2
+    printf 'Push mbpfan/ to %s (branch main) before building.\n\n' "$url" >&2
+    return 1
+  fi
+}
+
+build() {
+  cd "$_srcname/mbpfan"
+  make bin/mbpfan
+}
+
+package() {
+  cd "$_srcname/mbpfan"
+
+  install -Dm755 bin/mbpfan "$pkgdir/usr/bin/mbpfan"
+  install -Dm644 mbpfan.conf "$pkgdir/etc/mbpfan.conf"
+  install -Dm644 "$srcdir/mbpfan.service" \
+    "$pkgdir/usr/lib/systemd/system/mbpfan.service"
+  install -Dm644 mbpfan.depend.conf \
+    "$pkgdir/usr/lib/modules-load.d/mbpfan.depend.conf"
+  install -Dm644 mbpfan.8.gz "$pkgdir/usr/share/man/man8/mbpfan.8.gz"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 COPYING "$pkgdir/usr/share/licenses/$pkgname/COPYING"
+}

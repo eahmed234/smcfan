@@ -1,0 +1,22 @@
+post_install() {
+  cat <<'EOF'
+smcfan is built by DKMS for every installed kernel 7.3 and newer. Older kernels
+still ship the applesmc driver, and their macsmc.h has no SMC key ioctl ABI, so
+DKMS skips them on purpose. If you boot both kinds of kernel, expect one
+"WARNING: ... exited 77" line per old kernel on install; that is the skip, not a
+failure.
+
+The module is not loaded at boot by modules-load.d, because that file applies to
+every kernel. mbpfan.service loads it with a leading "-", so it starts cleanly
+even where the shim does not exist. To load it by hand:
+  sudo modprobe smcfan
+
+Check it:
+  lsmod | grep smcfan
+  ls -l /dev/smcfan
+EOF
+}
+
+post_upgrade() {
+  post_install
+}

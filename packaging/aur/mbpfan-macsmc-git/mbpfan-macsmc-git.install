@@ -1,0 +1,16 @@
+post_install() {
+  cat <<'EOF'
+mbpfan needs a way to reach the fans:
+  * Linux < 7.3: the in-tree applesmc driver, nothing else required.
+  * Linux 7.3+ (macsmc): install smcfan-dkms-git and make sure the shim loads.
+    mbpfan also tries macsmc-hwmon first; on models where that driver
+    registers no fans, /dev/smcfan is the only working path.
+
+Then enable the daemon:
+  sudo systemctl enable --now mbpfan.service
+EOF
+}
+
+post_upgrade() {
+  post_install
+}

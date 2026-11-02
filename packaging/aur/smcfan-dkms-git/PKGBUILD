@@ -1,0 +1,76 @@
+# Maintainer: Eisa Ahmed <eahmed234@gmail.com>
+#
+# smcfan - exposes Apple SMC fan keys (/dev/smcfan) on kernels that only have
+# the macsmc stack, where macsmc-core refuses fan writes from userspace.
+#
+# The module is built through DKMS against the headers of every installed
+# kernel, but it only compiles on kernels whose macsmc.h has the key ioctl ABI
+# (Linux 7.3+, e.g. the CachyOS Intel-Mac port). Vanilla Arch `linux` will
+# fail to build; DKMS skips kernels older than 7.3.
+
+pkgname=smcfan-dkms-git
+_pkgbase=smcfan
+pkgver=0
+pkgrel=1
+pkgdesc="DKMS module exposing Apple SMC fan keys as /dev/smcfan for the macsmc driver"
+arch=('x86_64')
+url="https://github.com/eahmed234/smcfan"
+license=('GPL-2.0-only')
+depends=('dkms')
+makedepends=('git')
+optdepends=(
+  'linux-cachyos-headers: build for linux-cachyos'
+  'linux-headers: build for the stock Arch kernel (needs the macsmc exports)'
+)
+provides=("$_pkgbase")
+conflicts=("$_pkgbase" 'smcfan-dkms' 'macsmc-fan-dkms')
+install="$pkgname.install"
+
+_srcname=smcfan
+source=("$_srcname::git+$url.git#branch=main")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$_srcname"
+  # The repository is not tagged; distance from the root commit plus a hash is
+  # enough for a -git package and always increases.
+  printf 'r%s.%s' \
+    "$(git rev-list --count HEAD)" \
+    "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+  cd "$_srcname"
+  if [ ! -f smcfan/smcfan.c ]; then
+    printf '\nsmcfan/smcfan.c is missing from the fetched source tree.\n' >&2
+    printf 'Push smcfan/ to %s (branch main) before building.\n\n' "$url" >&2
+    return 1
+  fi
+}
+
+package() {
+  cd "$_srcname"
+  local _dst="$pkgdir/usr/src/$_pkgbase-$pkgver"
+
+  install -d "$_dst"
+  install -m644 smcfan/smcfan.c smcfan/Makefile "$_dst/"
+
+  cat > "$_dst/dkms.conf" <<'EOF'
+PACKAGE_NAME="smcfan"
+PACKAGE_VERSION="@PKGVER@"
+MAKE[0]="make KVER=${kernelver} KBUILD_DIR=${kernel_source_dir}"
+BUILT_MODULE_NAME[0]="smcfan"
+BUILT_MODULE_LOCATION[0]="."
+DEST_MODULE_LOCATION[0]="/updates/dkms"
+AUTOINSTALL="yes"
+# Kernels before 7.3 still ship applesmc and predate the key ioctl ABI this
+# module speaks, so DKMS skips them instead of failing the transaction.
+BUILD_EXCLUSIVE_KERNEL_MIN="7.3"
+EOF
+  sed -i "s/@PKGVER@/$pkgver/" "$_dst/dkms.conf"
+
+  # Deliberately no /usr/lib/modules-load.d entry: such a file applies to every
+  # kernel, while dkms skips kernels < 7.3, so a global modprobe would fail
+  # systemd-modules-load.service whenever an LTS kernel boots. mbpfan.service
+  # loads the module itself with a leading "-".
+}
