@@ -12,11 +12,14 @@ Linux 7.3 removed the `applesmc` driver and moved Intel Macs onto the
   work, but its ioctl handler returns `EPERM` for a hardcoded list that
   contains every key needed to move a fan (`F<N>Tg`, `F<N>Md`, `FS! `).
 
+Battery reporting regressed the same way on these machines; that fix lives in
+its own project: [`smcbatt`](https://github.com/eahmed234/smcbatt).
+
 This repository closes that gap without touching the macsmc stack:
 
 | Piece | What it does |
 | --- | --- |
-| [`smcfan/`](smcfan/) | ~150-line DKMS module. Finds the `struct apple_smc` behind `macsmc-core` and exposes the exported `apple_smc_read()`/`apple_smc_write()` pair as `/dev/smcfan` (root only, mode 0600). Reads pass through for any key; writes are limited to `F<N>Tg`, `F<N>Md` and `FS! `, so battery and charging keys stay unreachable even for root. |
+| [`smcfan/`](smcfan/) | DKMS module. Finds the `struct apple_smc` behind `macsmc-core` and exposes the exported `apple_smc_read()`/`apple_smc_write()` pair as `/dev/smcfan` (root only, mode 0600). Reads pass through for any key; writes are limited to `F<N>Tg`, `F<N>Md` and `FS! `, so battery and charging keys stay unreachable even for root. It also registers a read-only hwmon with `fan<N>_input`/`_min`/`_max`, because `macsmc-hwmon` publishes no fan channels on these models. |
 | [`mbpfan/`](mbpfan/) | Fork of [mbpfan](https://github.com/linux-on-mac/mbpfan) that learns the macsmc paths: `macsmc-hwmon`'s `fan*_target` attributes when they exist, then `/dev/smc`, then `/dev/smcfan`. The original `applesmc` path is unchanged, so it still works on kernels older than 7.3. |
 | [`packaging/aur/`](packaging/) | `smcfan-dkms-git` and `mbpfan-macsmc-git` AUR packages, plus notes on publishing them. |
 
@@ -89,6 +92,19 @@ journalctl -u mbpfan -b --no-pager | tail -20
 With `-v`, mbpfan logs which backend it picked, e.g.
 `using SMC key fan control via /dev/smcfan (2 fans)`.
 
+Fan RPM is back in sysfs, read-only:
+
+```sh
+sensors | grep -A3 smcfan
+cat /sys/class/hwmon/hwmon*/fan1_input
+```
+
+`extras/sensors.d/macsmc_hwmon.conf` hides the `macsmc_hwmon` channels that are
+not temperatures (a filter coefficient that reads 8192 °C, a hot indicator,
+and drive sensors this model does not have); copy it to `/etc/sensors.d/` if
+`sensors` output bothers you. Desktop widgets read hwmon directly and ignore
+that file.
+
 ## Troubleshooting
 
 * **`mbpfan found no fan*_target ... Boot with macsmc_hwmon.fan_control=1`** —
@@ -110,6 +126,7 @@ With `-v`, mbpfan logs which backend it picked, e.g.
 
 ```
 smcfan/          kernel module (source + kbuild Makefile)
+extras/          lm-sensors profile for macsmc_hwmon
 mbpfan/          daemon fork, tests, smc-keytool debug tool
 packaging/aur/   AUR PKGBUILDs, unit, install messages
 ```

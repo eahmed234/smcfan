@@ -18,11 +18,13 @@
  */
 
 #include <linux/fs.h>
+#include <linux/hwmon.h>
 #include <linux/ioctl.h>
 #include <linux/mfd/macsmc.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
 
@@ -163,19 +165,159 @@ static struct miscdevice smcfan_device = {
 	.mode	= 0600,
 };
 
+/*
+ * Fan telemetry.
+ *
+ * applesmc used to publish F<N>Ac/F<N>Mn/F<N>Mx as fan<N>_input/min/max.
+ * macsmc-hwmon only registers a fan when the SMC has the full fan-control key
+ * set, so on models like the MacBookPro11,2 the fans disappear from sysfs
+ * entirely and nothing (sensors, desktop widgets, monitoring) can read RPM.
+ * The keys are readable through apple_smc_read(), so expose them read-only
+ * here. mbpfan keeps using /dev/smcfan for control.
+ */
+#define SMCFAN_MAX_FANS 8
+
+static struct device *smcfan_hwmon;
+static u32 *smcfan_fan_config;
+
+static int smcfan_fan_value(int fan, const char *suffix, long *val)
+{
+	smc_key key = __SMC_KEY('F', '0' + fan, suffix[0], suffix[1]);
+	u8 raw[2];
+	int ret;
+
+	if (smcfan_smc == NULL)
+		return -ENODEV;
+
+	ret = apple_smc_read(smcfan_smc, key, raw, sizeof(raw));
+	if (ret < 0)
+		return ret;
+	if (ret != sizeof(raw))
+		return -EIO;
+
+	/* fpe2: big-endian value with two fractional bits, i.e. RPM = raw / 4. */
+	*val = ((raw[0] << 8) | raw[1]) >> 2;
+	return 0;
+}
+
+static int smcfan_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
+			     u32 attr, int channel, long *val)
+{
+	switch (attr) {
+	case hwmon_fan_input:
+		return smcfan_fan_value(channel, "Ac", val);
+	case hwmon_fan_min:
+		return smcfan_fan_value(channel, "Mn", val);
+	case hwmon_fan_max:
+		return smcfan_fan_value(channel, "Mx", val);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static umode_t smcfan_hwmon_is_visible(const void *data,
+				       enum hwmon_sensor_types type,
+				       u32 attr, int channel)
+{
+	if (type != hwmon_fan)
+		return 0;
+
+	switch (attr) {
+	case hwmon_fan_input:
+	case hwmon_fan_min:
+	case hwmon_fan_max:
+		return 0444;
+	default:
+		return 0;
+	}
+}
+
+static const struct hwmon_ops smcfan_hwmon_ops = {
+	.is_visible	= smcfan_hwmon_is_visible,
+	.read		= smcfan_hwmon_read,
+};
+
+static struct hwmon_channel_info smcfan_fan_info;
+static const struct hwmon_channel_info *smcfan_hwmon_info[] = {
+	&smcfan_fan_info,
+	NULL,
+};
+static const struct hwmon_chip_info smcfan_chip_info = {
+	.ops	= &smcfan_hwmon_ops,
+	.info	= smcfan_hwmon_info,
+};
+
+static int smcfan_register_hwmon(void)
+{
+	u8 count;
+	int ret, i;
+
+	ret = apple_smc_read(smcfan_smc, SMC_KEY(FNum), &count, sizeof(count));
+	if (ret < 0)
+		return ret;
+	if (ret != sizeof(count) || count == 0)
+		return -ENODEV;
+
+	if (count > SMCFAN_MAX_FANS)
+		count = SMCFAN_MAX_FANS;
+
+	/*
+	 * The hwmon core walks this array until it sees a zero entry; without
+	 * the terminator it reads past the end and invents fan5..fan27.
+	 */
+	smcfan_fan_config = kcalloc(count + 1, sizeof(*smcfan_fan_config),
+				    GFP_KERNEL);
+	if (smcfan_fan_config == NULL)
+		return -ENOMEM;
+
+	for (i = 0; i < count; i++)
+		smcfan_fan_config[i] = HWMON_F_INPUT | HWMON_F_MIN | HWMON_F_MAX;
+
+	smcfan_fan_info.type = hwmon_fan;
+	smcfan_fan_info.config = smcfan_fan_config;
+
+	smcfan_hwmon = hwmon_device_register_with_info(smcfan_device.this_device,
+						       "smcfan", NULL,
+						       &smcfan_chip_info, NULL);
+	if (IS_ERR(smcfan_hwmon)) {
+		ret = PTR_ERR(smcfan_hwmon);
+		smcfan_hwmon = NULL;
+		kfree(smcfan_fan_config);
+		smcfan_fan_config = NULL;
+		return ret;
+	}
+
+	return 0;
+}
+
 static int __init smcfan_init(void)
 {
+	int ret;
+
 	smcfan_smc = smcfan_find_smc();
 	if (smcfan_smc == NULL) {
 		pr_err("smcfan: no Apple SMC device found; is macsmc-core loaded?\n");
 		return -ENODEV;
 	}
 
-	return misc_register(&smcfan_device);
+	ret = misc_register(&smcfan_device);
+	if (ret)
+		return ret;
+
+	/* Telemetry is a bonus: fan control keeps working without it. */
+	ret = smcfan_register_hwmon();
+	if (ret)
+		pr_warn("smcfan: fan telemetry unavailable: %d\n", ret);
+
+	return 0;
 }
 
 static void __exit smcfan_exit(void)
 {
+	if (smcfan_hwmon != NULL)
+		hwmon_device_unregister(smcfan_hwmon);
+
+	kfree(smcfan_fan_config);
 	misc_deregister(&smcfan_device);
 }
 
@@ -183,5 +325,5 @@ module_init(smcfan_init);
 module_exit(smcfan_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Fan key access for Apple SMC (macsmc) machines");
+MODULE_DESCRIPTION("Fan key access and telemetry for Apple SMC (macsmc) machines");
 MODULE_AUTHOR("Eisa Ahmed");
