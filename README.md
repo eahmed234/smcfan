@@ -1,5 +1,14 @@
 # smcfan — fan control for Intel Macs on Linux 7.3+
 
+> **Archived — no longer needed.** This worked around the Intel-Mac `macsmc`
+> stack that CachyOS 7.3.0–7.3.1 bound on pre-T2 Macs. Mainline Linux never
+> removed `applesmc`. From `linux-cachyos` 7.3.3, `macsmc` only binds on T2 Macs
+> (CachyOS/linux `b5b0300cdf`), so this module has nothing to attach to. Until
+> CachyOS re-enables `CONFIG_SENSORS_APPLESMC`
+> ([#1110](https://github.com/CachyOS/linux-cachyos/issues/1110)), use
+> [applesmc-cachyos-dkms](https://github.com/eahmed234/applesmc-cachyos-dkms),
+> which also includes the mbpfan patch and `smckbd-keys`.
+
 Linux 7.3 removed the `applesmc` driver and moved Intel Macs onto the
 `macsmc` stack. On some models that leaves no way to drive the fans:
 
